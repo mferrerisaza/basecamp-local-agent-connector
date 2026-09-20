@@ -25,7 +25,11 @@ class BasecampAgentConnector::Session::Claude
   BUSY_STATES = %w[working].freeze
 
   ANSI = /\e\[[0-9;]*m/
-  BACKGROUNDED = /backgrounded\D+([0-9a-f]{6,})/
+  # The separator is matched with `\W+`, not `\D+`: a short id beginning with a
+  # hex letter is itself non-digit, so `\D+` consumed that first character and
+  # the capture came back one short -- `c082afb6` read as `082afb6`, matching no
+  # session, leaving the card unresumable and its follow-up comments undelivered.
+  BACKGROUNDED = /backgrounded\W+([0-9a-f]{6,})/
 
   # How long to keep asking the CLI for the new session's full id. It is
   # normally listed at once; this exists so a slow machine costs a few hundred

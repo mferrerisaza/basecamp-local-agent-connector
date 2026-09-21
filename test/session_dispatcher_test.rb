@@ -335,6 +335,25 @@ class SessionDispatcherTest < Minitest::Test
     refute_includes @runner.commands_matching(/boost create/).first.join(" "), "--event"
   end
 
+  # The case that needs the move as its target most. The session already
+  # exists, so nothing is opened and the agent posts nothing else -- a boost on
+  # the card would be indistinguishable from the one left when the session was
+  # opened, and the requester has no way to tell the move registered. Note the
+  # move is unassigned here: having the session is what earns it.
+  def test_moving_a_card_that_has_a_session_is_acknowledged_on_the_move
+    subject = dispatcher
+    subject.dispatch event
+    @claude.states[@claude.only_session_id] = "done"
+    before = @runner.commands_matching(/boost create/).length
+
+    subject.dispatch moved
+
+    boosts = @runner.commands_matching(/boost create/)
+
+    assert_equal before + 1, boosts.length
+    assert_includes boosts.last.join(" "), "--event 99005"
+  end
+
   # A move carries no words. Handing over the card's own description would read
   # as the requester repeating the brief, and the agent would redo finished work.
   def test_a_move_is_briefed_as_a_move_not_as_the_cards_description

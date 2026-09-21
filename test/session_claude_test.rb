@@ -232,17 +232,36 @@ class SessionClaudeTest < Minitest::Test
     assert_includes @runner.commands_matching(/agents/).first, "--all"
   end
 
-  def test_unusable_output_reads_as_no_sessions
+  # A question that went unanswered is not an answer of "none". Flattening the
+  # two is what let a resident session be resumed in place and forked -- so an
+  # unreadable listing says it does not know, and residency says so too.
+  def test_unusable_output_reads_as_unknown
     @runner.stub "claude agents --json", stdout: "not json at all"
 
-    assert_empty @claude.sessions
+    assert_nil @claude.sessions
     assert_nil @claude.state("uuid-1")
+    assert_nil @claude.resident?("uuid-1")
   end
 
-  def test_a_failed_listing_reads_as_no_sessions
+  def test_a_failed_listing_reads_as_unknown
     @runner.stub "claude agents --json", stdout: "", stderr: "boom", exit_status: 1
 
+    assert_nil @claude.sessions
+    assert_nil @claude.resident?("uuid-1")
+  end
+
+  # An empty list is a real answer, and a different one.
+  def test_an_empty_listing_reads_as_not_resident
+    @runner.stub "claude agents --json", stdout: "[]"
+
     assert_empty @claude.sessions
+    refute @claude.resident?("uuid-1")
+  end
+
+  def test_a_listed_session_is_resident
+    @runner.stub "claude agents --json", stdout: agents_json
+
+    assert @claude.resident?("uuid-1")
   end
 
   def test_availability_follows_the_cli

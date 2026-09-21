@@ -8,7 +8,7 @@ class FakeClaude
   Continuation = Struct.new(:session_id, :prompt, :cwd, :stopped)
 
   attr_reader :spawns, :continuations, :stops
-  attr_accessor :states, :spawn_succeeds, :resolvable
+  attr_accessor :states, :spawn_succeeds, :resolvable, :listing_fails
 
   def initialize
     @spawns = []
@@ -56,7 +56,20 @@ class FakeClaude
     result(true)
   end
 
+  # nil when the CLI could not be asked -- the real one cannot tell an empty
+  # list from a question that went unanswered unless it says so.
+  def resident?(session_id)
+    return nil if @listing_fails
+
+    @states.key?(session_id)
+  end
+
+  # Both of these read the same listing in the real class, so an unanswerable
+  # CLI has to blank both here -- otherwise the double quietly knows things the
+  # connector could not have known.
   def state(session_id)
+    return nil if @listing_fails
+
     @states[session_id]
   end
 
@@ -286,6 +299,46 @@ class SessionDispatcherTest < Minitest::Test
     assert_equal 1, @claude.spawns.length
     assert_equal 1, @claude.continuations.length
     assert_includes @claude.continuations.first.prompt, "In progress"
+  end
+
+  # Resuming a resident session forks it into a copy under a new id, carrying
+  # the whole conversation -- one card, two sessions, two replies. So a session
+  # the CLI still lists is stopped first.
+  def test_a_resident_session_is_stopped_before_it_is_continued
+    subject = dispatcher
+    subject.dispatch event
+    @claude.states[@claude.only_session_id] = "done"
+
+    subject.dispatch moved
+
+    assert_predicate @claude.continuations.last, :stopped
+    refute_empty @claude.stops
+  end
+
+  # The case that forked a card in production: the connector had just
+  # restarted, the first event arrived before `claude agents` could answer, and
+  # an unanswered question read as "no such session" -- which took the branch
+  # that forks. Not knowing has to take the safe branch instead.
+  def test_a_session_the_cli_cannot_be_asked_about_is_not_resumed_in_place
+    subject = dispatcher
+    subject.dispatch event
+    @claude.states[@claude.only_session_id] = "done"
+    @claude.listing_fails = true
+
+    subject.dispatch moved
+
+    assert_predicate @claude.continuations.last, :stopped
+  end
+
+  # Nothing to stop, so nothing is spent trying.
+  def test_a_session_that_is_not_resident_is_resumed_in_place
+    subject = dispatcher
+    subject.dispatch event
+    @claude.states.delete @claude.only_session_id
+
+    subject.dispatch moved
+
+    refute_predicate @claude.continuations.last, :stopped
   end
 
   # Assignment is how the board says a card is the agent's. Without it, a move

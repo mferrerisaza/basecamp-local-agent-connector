@@ -84,7 +84,7 @@ class BasecampAgentConnector::Session::Claude
   # the first ask.
   def resolve_session_id(short_id)
     RESOLVE_ATTEMPTS.times do |attempt|
-      found = sessions.find { |session| session["id"] == short_id }
+      found = sessions&.find { |session| session["id"] == short_id }
       return found["sessionId"] if found
 
       @wait.call RESOLVE_DELAY if attempt < RESOLVE_ATTEMPTS - 1
@@ -142,20 +142,34 @@ class BasecampAgentConnector::Session::Claude
     running? record["pid"]
   end
 
+  # Whether the CLI still lists this session, so it is resident and has to be
+  # stopped before it can be continued in place. `nil` means the CLI could not
+  # be asked -- the caller is left to decide what not knowing is worth, because
+  # the two answers are not equally safe to guess at.
+  def resident?(session_id)
+    listed = sessions
+    return nil if listed.nil?
+
+    listed.any? { |session| session["sessionId"] == session_id }
+  end
+
   def session(session_id)
-    sessions.find { |session| session["sessionId"] == session_id }
+    sessions&.find { |session| session["sessionId"] == session_id }
   end
 
   # Includes sessions that have already finished, so a card commented on
   # tomorrow finds yesterday's session rather than opening a second one.
+  # `nil` when the CLI could not be asked, which is not the same as an empty
+  # list and must not be flattened into one: callers decide what a question
+  # they could not get an answer to means for them.
   def sessions
     result = run("agents", "--json", "--all")
-    return [] unless result.success?
+    return nil unless result.success?
 
     parsed = JSON.parse(result.stdout)
     parsed.is_a?(Array) ? parsed : []
   rescue JSON::ParserError
-    []
+    nil
   end
 
   private

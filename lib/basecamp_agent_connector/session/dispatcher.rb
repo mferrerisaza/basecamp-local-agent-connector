@@ -236,8 +236,17 @@ class BasecampAgentConnector::Session::Dispatcher
         return nil
       end
 
+      # The branches are not symmetric. Stopping a session that turns out not to
+      # be resident costs nothing: the stop fails, the resume proceeds. Resuming
+      # one that *is* resident forks it -- a copy under a new id carrying the
+      # whole conversation, which is the exact failure dispatching per card
+      # exists to prevent, and it announces itself as an ordinary continue.
+      #
+      # So only a definite "not resident" earns the plain resume. Not knowing
+      # takes the safe branch, which matters most right after a restart, when
+      # the CLI is least able to answer and the first event is arriving.
       result =
-        if @claude.state(entry.session_id).nil?
+        if @claude.resident?(entry.session_id) == false
           @claude.resume(session_id: entry.session_id, prompt: prompt, cwd: entry.repo)
         else
           @claude.stop_then_resume(session_id: entry.session_id, short_id: entry.short_id, prompt: prompt, cwd: entry.repo)

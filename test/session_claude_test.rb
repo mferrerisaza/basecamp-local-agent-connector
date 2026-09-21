@@ -171,19 +171,20 @@ class SessionClaudeTest < Minitest::Test
     refute @claude.busy?("uuid-absent")
   end
 
-  # The CLI leaves `state` at `working` when a session dies mid-turn, so state
-  # alone cannot answer this: believing it holds every later message for a
-  # session that will never finish, and the card it belongs to goes deaf.
-  def test_a_working_session_whose_process_is_gone_is_not_busy
+  # The bug this guards: a session can sit at `state: working` while `status`
+  # says `idle` -- resident, but between turns or simply finished and not yet
+  # reaped. Its process is alive, so liveness cannot answer the question, and a
+  # message held for it waits as long as that process happens to linger.
+  def test_a_resident_session_that_is_idle_is_not_busy
     @runner.stub "claude agents --json", stdout: JSON.generate([
       { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
-        "state" => "working", "status" => "idle", "pid" => reaped_pid }
+        "state" => "working", "status" => "idle", "pid" => Process.pid }
     ])
 
     refute @claude.busy?("uuid-1")
   end
 
-  def test_a_working_session_that_is_still_running_is_busy
+  def test_a_resident_session_that_is_working_is_busy
     @runner.stub "claude agents --json", stdout: JSON.generate([
       { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
         "state" => "working", "status" => "busy", "pid" => Process.pid }
@@ -192,11 +193,31 @@ class SessionClaudeTest < Minitest::Test
     assert @claude.busy?("uuid-1")
   end
 
-  # Nothing to wait for, so nothing to hold a message back for.
-  def test_a_working_session_without_a_pid_is_not_busy
+  # `status` is reported only while the session is resident. Without it there is
+  # nothing to read but the process, and a session that died mid-turn keeps
+  # `state: working` for good -- so the card would go deaf, silently.
+  def test_without_a_status_a_gone_process_is_not_busy
     @runner.stub "claude agents --json", stdout: JSON.generate([
       { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
-        "state" => "working", "status" => "idle" }
+        "state" => "working", "pid" => reaped_pid }
+    ])
+
+    refute @claude.busy?("uuid-1")
+  end
+
+  def test_without_a_status_a_live_process_is_busy
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
+        "state" => "working", "pid" => Process.pid }
+    ])
+
+    assert @claude.busy?("uuid-1")
+  end
+
+  def test_without_a_status_or_a_pid_nothing_is_busy
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
+        "state" => "working" }
     ])
 
     refute @claude.busy?("uuid-1")

@@ -20,9 +20,12 @@ require "json"
 class BasecampAgentConnector::Session::Claude
   EXECUTABLE = "claude".freeze
 
-  # `claude agents --json` reports a `state` per session. Only one of them
-  # means "busy with work that stopping would throw away".
+  # `claude agents --json` reports two different things per session, and the
+  # difference matters here. `state` is the lifecycle -- working, blocked, done.
+  # `status` is what the session is doing *right now*, and it is reported only
+  # while the session is resident: `busy` or `idle`, absent once it is gone.
   BUSY_STATES = %w[working].freeze
+  BUSY_STATUS = "busy".freeze
 
   ANSI = /\e\[[0-9;]*m/
   # The separator is matched with `\W+`, not `\D+`: a short id beginning with a
@@ -120,13 +123,21 @@ class BasecampAgentConnector::Session::Claude
   # Stopping a session that is mid-work discards that work, so a caller that
   # wants to deliver a message has to know the difference.
   #
-  # A session whose process is gone is not busy, whatever its state says. The
-  # CLI leaves `state` at `working` when a session dies mid-turn, and believing
-  # that alone holds every later message for a session that can never finish --
-  # the card goes deaf, silently, and stays that way until somebody notices.
+  # The question is what the session is *doing*, which `status` answers and
+  # `state` does not. A session can sit at `state: working` while `status` says
+  # `idle` -- resident, but between turns or finished and not yet reaped. It is
+  # not busy, and holding a message for it stalls the card for as long as the
+  # process happens to linger.
+  #
+  # `status` is absent once the session is no longer resident, and a dead
+  # session is not busy either: the CLI leaves `state` at `working` when one
+  # dies mid-turn, so that case falls through to asking the process directly.
   def busy?(session_id)
     record = session(session_id)
     return false unless record && BUSY_STATES.include?(record["state"])
+
+    status = record["status"]
+    return status == BUSY_STATUS unless status.nil?
 
     running? record["pid"]
   end

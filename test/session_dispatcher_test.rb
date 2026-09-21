@@ -318,6 +318,42 @@ class SessionDispatcherTest < Minitest::Test
     assert_equal 1, @runner.commands_matching(/boost create/).length
   end
 
+  # The card is what the payload names, and it may be weeks old and already
+  # covered in boosts. The move is what asked for the work, and bc3 keeps
+  # boosts on events too -- so the receipt lands on the move's own line.
+  def test_a_move_is_acknowledged_on_the_move_event_not_the_card
+    dispatcher.dispatch moved({}, assigned: true)
+
+    assert_includes @runner.commands_matching(/boost create/).first.join(" "), "--event 99005"
+  end
+
+  # Everything else names a recording the requester actually wrote, which is
+  # the right thing to boost. No event id goes near those.
+  def test_an_ordinary_event_is_acknowledged_on_its_own_recording
+    dispatcher.dispatch event
+
+    refute_includes @runner.commands_matching(/boost create/).first.join(" "), "--event"
+  end
+
+  # The case that needs the move as its target most. The session already
+  # exists, so nothing is opened and the agent posts nothing else -- a boost on
+  # the card would be indistinguishable from the one left when the session was
+  # opened, and the requester has no way to tell the move registered. Note the
+  # move is unassigned here: having the session is what earns it.
+  def test_moving_a_card_that_has_a_session_is_acknowledged_on_the_move
+    subject = dispatcher
+    subject.dispatch event
+    @claude.states[@claude.only_session_id] = "done"
+    before = @runner.commands_matching(/boost create/).length
+
+    subject.dispatch moved
+
+    boosts = @runner.commands_matching(/boost create/)
+
+    assert_equal before + 1, boosts.length
+    assert_includes boosts.last.join(" "), "--event 99005"
+  end
+
   # A move carries no words. Handing over the card's own description would read
   # as the requester repeating the brief, and the agent would redo finished work.
   def test_a_move_is_briefed_as_a_move_not_as_the_cards_description

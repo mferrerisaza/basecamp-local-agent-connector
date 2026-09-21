@@ -138,11 +138,22 @@ class BasecampAgentConnector::Session::Dispatcher
       url = event.dig("recording", "url")
       return true if url.nil?
 
-      @basecamp_cli.create_boost url_or_id: url, content: ack_content(event), profile: @agent
+      @basecamp_cli.create_boost url_or_id: url, content: ack_content(event),
+        profile: @agent, event: acknowledged_event_id(event)
       true
     rescue BasecampAgentConnector::Basecamp::Client::Error => error
       log "receipt boost did not land for event #{event["event_id"]}: #{error.message}"
       false
+    end
+
+    # Every other trigger names a recording the requester wrote -- a comment, a
+    # message -- and boosting that is the receipt. A move names only the card,
+    # which may be weeks old and says nothing about which move was picked up.
+    # The move itself is an event in the card's history, and bc3 lets those
+    # carry boosts, so the receipt goes on the "moved this card to In progress"
+    # line that actually asked for the work. `event_id` is that event's id.
+    def acknowledged_event_id(event)
+      event["event_id"] if event.dig("trigger", "moved")
     end
 
     def acknowledgeable?(event)

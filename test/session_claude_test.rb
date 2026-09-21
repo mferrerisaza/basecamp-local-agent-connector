@@ -171,6 +171,37 @@ class SessionClaudeTest < Minitest::Test
     refute @claude.busy?("uuid-absent")
   end
 
+  # The CLI leaves `state` at `working` when a session dies mid-turn, so state
+  # alone cannot answer this: believing it holds every later message for a
+  # session that will never finish, and the card it belongs to goes deaf.
+  def test_a_working_session_whose_process_is_gone_is_not_busy
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
+        "state" => "working", "status" => "idle", "pid" => reaped_pid }
+    ])
+
+    refute @claude.busy?("uuid-1")
+  end
+
+  def test_a_working_session_that_is_still_running_is_busy
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
+        "state" => "working", "status" => "busy", "pid" => Process.pid }
+    ])
+
+    assert @claude.busy?("uuid-1")
+  end
+
+  # Nothing to wait for, so nothing to hold a message back for.
+  def test_a_working_session_without_a_pid_is_not_busy
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card",
+        "state" => "working", "status" => "idle" }
+    ])
+
+    refute @claude.busy?("uuid-1")
+  end
+
   # Finished sessions are included, so a card commented on tomorrow finds
   # yesterday's session rather than opening a second one.
   def test_finished_sessions_are_listed
@@ -214,9 +245,18 @@ class SessionClaudeTest < Minitest::Test
       ])
     end
 
+    # A pid that is certainly not running: one we started and waited on. Picking
+    # a number out of the air would risk naming a live process.
+    def reaped_pid
+      pid = Process.spawn("true", out: File::NULL, err: File::NULL)
+      Process.wait pid
+      pid
+    end
+
     def agents_json
       JSON.generate([
-        { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card", "state" => "working", "status" => "busy" },
+        { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card", "state" => "working",
+          "status" => "busy", "pid" => Process.pid },
         { "id" => "uuid-2"[0, 8], "sessionId" => "uuid-2", "name" => "Another card", "state" => "done", "status" => "idle" },
         { "id" => "uuid-3"[0, 8], "sessionId" => "uuid-3", "name" => "A third", "state" => "blocked", "status" => "idle" }
       ])

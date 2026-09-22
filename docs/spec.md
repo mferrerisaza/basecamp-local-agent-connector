@@ -389,10 +389,20 @@ progresses, and those moves die on the same branch that stops the reply loop.
 
 **Corroboration.** Neither of the existing checks applies. A move's author is
 whoever dragged the card, not the card's creator, and the agent need not be an
-assignee for the move to be real. So the Verifier re-fetches the card and
-requires it to *currently sit in the column the event claims* — a forged POST
-cannot move a real card, and a move since undone or superseded fails too, which
-is correct: the card is no longer where the event says.
+assignee for the move to be real. Nor is the card's current column enough: a
+forger need not move anything, only claim a move into the column the card
+already sits in, with any `parent_id_was`.
+
+What bc3 does keep is the move itself. A card's history
+(`/buckets/:bucket/recordings/:id/events.json`) records each adoption with its
+id, author and both columns, and the webhook's id *is* that event's id —
+verified against a real delivery. So the Verifier requires this exact event to
+exist, be an `adopted` action and land in the claimed column, and the card to
+still sit there. The authoritative event then takes its author and `details`
+from that record rather than the POST, so the pipeline's second authorization
+and its "did the column actually change" check both run on what Basecamp
+recorded. That makes a move better corroborated than an assignment, whose
+assigner only the POST names.
 
 **Targeting, and why it is split.** The pipeline does not ask whether the card
 is the agent's; an assignee check there would drop moves on cards the agent is
@@ -401,6 +411,23 @@ Instead the Verifier stamps `agent_assigned`, and the dispatcher decides: a move
 drives a session the card already has, and opens a new one only where the agent
 is an assignee. A move on a card with neither is ignored — and ignored *before*
 the receipt boost, so nothing on the card implies somebody picked it up.
+
+**Receipt.** Every other trigger names a recording the requester wrote, and
+boosting it is the receipt. A move names only the card, which may be weeks old
+and already boosted from earlier rounds. bc3 keeps boosts on events as well as
+recordings, and the adoption is an event in the card's history whose id is the
+webhook's `event_id` — so the receipt is `boost create <card> --event
+<event_id>`, and it lands on the move itself. Verified against a live board:
+`adopted` events carry a boosts URL, and the neighbouring kinds do not.
+
+**Independent of dispatch mode.** A move is a trigger; dispatch is what happens
+after one. Under `--dispatch session` the rules above live in the session
+dispatcher. Under the default `--dispatch stdout` the `/basecamp-connect` skill
+applies the same ones from the emitted line: drop a move whose
+`trigger.assigned` is false before the boost, boost the move event with
+`--event <event_id>`, brief the column rather than the card's description, and
+leave the card where it is. The one difference is that the skill keeps no
+sessions, so "drive the session the card already has" does not arise there.
 
 **Briefing.** A move carries no words, so the card's description must not be
 handed over as though newly said; on a follow-up that reads as the requester
@@ -420,8 +447,11 @@ dispatching a worker, replying — belongs to whatever is reading, normally the
 `/basecamp-connect` skill below. The connector stays dumb-and-safe.
 
 **`--dispatch session`** additionally opens a Claude Code session per *thing of
-work*. STDOUT is unaffected, so this adds a reader rather than diverting the
-stream and a watching skill may still run alongside.
+work*. STDOUT is unaffected — the line is written first and unconditionally —
+so a consumer that only reads the stream keeps working. An *active* watcher is
+another matter: the `/basecamp-connect` skill dispatches every event it reads,
+and running it against a connector that already dispatches means every event is
+handled twice. The two are alternatives, one driver per connector, not layers.
 
 The unit is the thing of work, not the event. `Session::Key` resolves a
 recording to its root — the parent for a Comment or a chat line, the recording
@@ -454,10 +484,42 @@ handled rather than hoped away:
 3. **Nothing can be interrupted safely.** A resident session must be stopped
    before `--resume` will continue it in place; resuming a running one forks a
    *copy* under a new id, which would give one card two sessions. So a comment
-   arriving while its session is `working` is queued and delivered when the
-   session goes quiet, and a flusher thread drains the queue — the alternative,
+   arriving while its session is busy is queued and delivered when the session
+   goes quiet, and a flusher thread drains the queue — the alternative,
    delivering on the next event, leaves a comment waiting for as long as the
    card stays quiet.
+
+Two details of `claude agents --json` decide whether that works, and both were
+learned from a live board rather than the docs:
+
+- **Busy is `status`, not `state` or liveness.** `state` is the lifecycle
+  (`working`, `blocked`, `done`); `status` is what the session is doing right
+  now (`busy`, `idle`), reported only while it is resident. A session can sit
+  at `state: working, status: idle` with a live pid — between turns, or
+  finished and not yet reaped — and treating that as busy holds the card's
+  messages for as long as the process lingers. When `status` is absent the
+  session is not resident, and the question falls back to whether its process
+  is alive, since the CLI leaves `state` at `working` when a session dies
+  mid-turn.
+- **Not knowing is not "gone".** When the listing cannot be read at all,
+  residency is unknown, and the two guesses are not equally safe: stopping a
+  session that turns out not to be resident costs nothing, while resuming one
+  that is forks the card. So only a definite "not listed" earns a plain
+  resume; anything else stops first. This matters most right after a restart,
+  when the first event arrives just as the CLI is least able to answer. The
+  same goes for busy: a follow-up is continued only on a definite "idle", and
+  a listing the CLI could not give holds it for the flusher, since stopping a
+  session that may be mid-work would throw its work away.
+
+A message leaves the queue only once a resume actually went through. The
+flusher's check, resume and queue update are one decision under the card's
+registry lock — the lock a webhook delivery takes too — so a comment arriving
+mid-flush waits rather than continuing the session in between. A resume that
+fails keeps every message queued, a direct follow-up whose resume fails is
+queued rather than dropped, and a stop that fails on a session still listed is
+not followed by a resume, because that resume would fork it. A spawn that
+cannot even start (a mapped repo that does not exist) is reported on the card
+like any refused spawn.
 
 A dispatched session must never sit blocked on a question. Nothing watches its
 terminal, and the CLI's session log is raw terminal output rather than text, so

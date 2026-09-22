@@ -322,8 +322,11 @@ bin/connect @Clawdito --project "BC5 Calendar" --dispatch session
 | `--session-permission-mode MODE` | `acceptEdits` | What dispatched sessions may do without asking. |
 | `--session-model MODEL` | whatever `claude` uses | Model for dispatched sessions. |
 
-STDOUT still carries every event under `--dispatch session`, so a watching skill
-can run alongside if you want one.
+STDOUT still carries every event under `--dispatch session`, so anything that
+only *reads* the stream keeps working. **Don't run the `/basecamp-connect` skill
+against it at the same time**, though: the skill dispatches every event it reads,
+and the connector has already dispatched it, so each mention would get two
+receipts, two workers and two replies. Pick one driver per connector.
 
 > **Worth understanding before you turn this on.** Dispatched sessions run
 > unattended at the permission mode you give them, which makes the trust boundary
@@ -345,8 +348,12 @@ instead of you having to @mention it afterwards to say what the board already
 says.
 
 ```bash
-bin/connect @Clawdito --project "BC5 Calendar" --dispatch session --on-column-move
+bin/connect @Clawdito --project "BC5 Calendar" --on-column-move
 ```
+
+It is independent of how events are dispatched. The `/basecamp-connect` skill
+handles moves under the default `--dispatch stdout`, and `--dispatch session`
+handles them itself; both apply the rules below.
 
 Basecamp calls a column change an *adoption* (`kanban_card_adopted`) — a card's
 column is its parent — and the delivery names the destination column, so nothing
@@ -357,12 +364,19 @@ structurally (`Kanban::DoneColumn`, `Kanban::NotNowColumn`), so this holds
 however those columns are titled, renamed or translated. Carve out further
 columns by title with `--column-move-except "Backlog"`.
 
-**A move drives a session the card already has, but only opens a new one when
-the agent is an assignee.** A move is the one trigger that can arrive about a
-card nobody addressed to the agent — anyone's card, dragged across a board it
-merely watches — so assignment is how the board says a card is the agent's. A
-move on a card with no session and no assignment is ignored, and gets no receipt
-boost, so nothing on the card implies somebody picked it up.
+**A move is acted on only for a card that is the agent's.** A move is the one
+trigger that can arrive about a card nobody addressed to the agent — anyone's
+card, dragged across a board it merely watches — so assignment is how the board
+says a card is the agent's, and every emitted move carries `trigger.assigned`.
+Under `--dispatch session` a move also drives a session the card already has,
+since a card mid-conversation is exactly what a move is meant to push along.
+Anything else is ignored and gets no receipt boost, so nothing on the card
+implies somebody picked it up.
+
+**The receipt goes on the move, not the card.** A card may be weeks old and
+already carry boosts from earlier rounds, so a boost there wouldn't say *which*
+move was picked up. bc3 lets the events in a card's history carry boosts too, so
+the 👀 lands on the "moved this card to In progress" line itself.
 
 **The session is told to leave the card where it is.** You chose that column
 deliberately; moving it on would both override you and erase the signal. (A
@@ -482,10 +496,12 @@ can run commands. `bin/connect` emits an event only when **all** of these hold:
    assignees; the assigner's identity is not independently corroborated, so
    there the secret URL path — a fresh 128-bit token per run — is the gate that
    stops a forged operator-assignment, not corroboration. For a **column move**
-   it means the card is re-fetched and must **currently sit in the column the
-   event claims it was moved into** — a forged POST cannot move a real card,
-   and a move since undone or superseded fails the same test, which is right:
-   the card is no longer where the event says it is.
+   it means the move itself is found in **the card's own event history**: the
+   webhook's id must be a real adoption there, into the claimed column, and the
+   author and columns acted on are read from that record, not the POST. So a
+   forged move — even one claiming the column the card already sits in — has
+   nothing to match. The card must also still be in that column, since a move
+   since undone or superseded no longer describes the board.
 
 For a mention, the content acted on is the **authoritative copy fetched from
 Basecamp**, never the raw POST body.
@@ -597,7 +613,7 @@ bin/connect @Clawdito --project Queenbee --operator jorge --port 4567
 | `--boost-poll` | Received-boosts poll interval, in seconds. Boosts have no webhooks, so the connector polls the agent's own received-boosts feed for them. | `60` |
 | `--no-boosts` | Don't poll the agent's received-boosts feed (no boost trigger). | polling on |
 | `--webhook-check` | How often, in seconds, to re-check that each registered webhook is still active and its funnel path still mounted, putting back whichever isn't, and to reconcile each webhook's delivery history so a delivery that never arrived is replayed. Basecamp deactivates a webhook after 10 failed deliveries. | `300` |
-| `--on-column-move` | Let moving a card into another column trigger the agent, on a board where the column says what work is wanted. Moves into Done and Not-now columns never trigger; a move drives a session the card already has, but opens a new one only if the agent is an assignee. See [Column moves](#column-moves---on-column-move). | off |
+| `--on-column-move` | Let moving a card into another column trigger the agent, on a board where the column says what work is wanted. Moves into Done and Not-now columns never trigger; a move drives a session the card already has, but opens a new one only if the agent is an assignee. Works under either `--dispatch` mode. See [Column moves](#column-moves---on-column-move). | off |
 | `--column-move-except` | Also never trigger on a move into this column, by title (repeatable or comma-separated). Implies `--on-column-move`. Done and Not-now columns are already excluded by type. | — |
 | `--dispatch` | What to do with a verified event. `stdout` prints it and stops there, for a watching driver to act on. `session` also opens one Claude session per card/message/todo and needs no watcher — see [One session per task](#one-session-per-task---dispatch-session). | `stdout` |
 | `--session-permission-mode` | Permission mode for dispatched sessions (`--dispatch session` only). They run unattended, so this is what they may do without asking. | `acceptEdits` |

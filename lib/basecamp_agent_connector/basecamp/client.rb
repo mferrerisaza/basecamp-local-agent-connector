@@ -139,6 +139,13 @@ class BasecampAgentConnector::Basecamp::Client
     Array json("api", "get", "/my/boosts.json", *profile_flag(profile))
   end
 
+  # A recording's history, newest first: what happened to it, who did it, and
+  # the details of each change. The CLI has no dedicated command for it, so go
+  # through its raw API passthrough, as for the received-boosts feed.
+  def recording_events(bucket:, recording:)
+    Array json("api", "get", "/buckets/#{bucket}/recordings/#{recording}/events.json")
+  end
+
   # The receipt boost, posted as the agent: the requester's evidence that the
   # mention registered before any slow work starts.
   #
@@ -148,6 +155,7 @@ class BasecampAgentConnector::Basecamp::Client
   # a duplicate reaction is harmless, and a missing ack is indistinguishable
   # from a missed mention — which is the failure worth spending a duplicate to
   # avoid.
+  #
   # `event:` boosts one line of a recording's history rather than the recording
   # itself -- bc3 keeps boosts on events too, and the CLI takes `--event` for it.
   def create_boost(url_or_id:, content:, profile: nil, event: nil)

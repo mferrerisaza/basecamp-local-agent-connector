@@ -510,6 +510,40 @@ learned from a live board rather than the docs:
   same goes for busy: a follow-up is continued only on a definite "idle", and
   a listing the CLI could not give holds it for the flusher, since stopping a
   session that may be mid-work would throw its work away.
+- **`claude stop` returns before the session is gone.** It returns once the
+  stop is requested, and a session tearing down a dev server or a test run
+  takes a moment to exit. A resume issued in that window finds it still
+  resident and forks it — seen five times in five days, the copy claimed
+  between 14 and 573 ms before the original finished exiting. So the resume
+  waits, polling for up to ten seconds, until the session is unlisted or listed
+  without a `status`; if it has not gone, or the listing cannot be read, the
+  continue fails and the message stays queued. In case a fork ever gets
+  through anyway, the dispatcher compares the session the CLI says it
+  continued with the one it asked for, and logs a copy loudly.
+- **`busy` can outlive the turn.** The CLI has been seen to keep reporting
+  `status: busy` for hours after a turn finished, which held a card's comments
+  for seven. So a `busy` status is checked against the session's transcript and
+  overruled only when the transcript's last conversation is followed by the
+  turn's `turn_duration`, at least 30 minutes ago, with nothing since. A running
+  turn writes as it goes and never ends that way; the margin is wide because a
+  turn can end with a background task still running, which stopping the
+  session would kill. A transcript that cannot be found or read leaves the
+  CLI's answer standing.
+
+**Reaching a busy session mid-work.** A comment for a session that is busy is
+first sent to it the way a reply typed into agent view is: a `reply` request on
+the background daemon's control socket (found via `claude daemon status`,
+authenticated with the key in `~/.claude/daemon/control.key`, so only the OS
+user the sessions run as can do it). The session reads it between tool calls
+without interrupting the running command, and it arrives as the user's own
+message, like a resume prompt. It is sent as one line, since a reply with line
+breaks is framed as pasted content. This is an internal Claude Code interface,
+not a documented one — the documented cross-session inbox was tried first and
+rejected, because it frames the message as coming from another session and not
+the user. So every delivery is confirmed in the session's transcript, and one
+that is refused, unconfirmed within five seconds, or impossible (no daemon, no
+key) falls back to holding the comment for the flusher, which delivers with an
+ordinary resume. The flusher never uses the reply channel.
 
 A message leaves the queue only once a resume actually went through. The
 flusher's check, resume and queue update are one decision under the card's

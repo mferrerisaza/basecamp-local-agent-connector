@@ -386,9 +386,6 @@ class SessionDispatcherTest < Minitest::Test
     assert_includes @claude.continuations.first.prompt, "In progress"
   end
 
-  # Resuming a resident session forks it into a copy under a new id, carrying
-  # the whole conversation -- one card, two sessions, two replies. So a session
-  # the CLI still lists is stopped first.
   # Every fork so far logged as an ordinary continue. When the CLI reports that
   # it continued a different session from the one it was given, that is said.
   def test_a_resume_that_lands_in_a_copy_is_named_in_the_log
@@ -413,6 +410,9 @@ class SessionDispatcherTest < Minitest::Test
     refute_match(/COPIED/, @log.string)
   end
 
+  # Resuming a resident session forks it into a copy under a new id, carrying
+  # the whole conversation -- one card, two sessions, two replies. So a session
+  # the CLI still lists is stopped first.
   def test_a_resident_session_is_stopped_before_it_is_continued
     subject = dispatcher
     subject.dispatch event

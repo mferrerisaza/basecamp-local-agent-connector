@@ -16,11 +16,75 @@ class SessionClaudeTest < Minitest::Test
     @runner = FakeCommandRunner.new
     @projects = Dir.mktmpdir("claude-projects")
     @now = Time.utc(2026, 9, 26, 18, 30)
-    @claude = Claude.new(command_runner: @runner, wait: ->(_seconds) { }, projects_dir: @projects, clock: -> { @now })
+    @inboxes = Dir.mktmpdir("cc-socks")
+    @claude = Claude.new(command_runner: @runner, wait: ->(_seconds) { }, projects_dir: @projects, clock: -> { @now },
+      inbox_dirs: [ File.join(@inboxes, "missing"), @inboxes ])
   end
 
   def teardown
+    @inbox_thread&.kill
     FileUtils.remove_entry @projects
+    FileUtils.remove_entry @inboxes
+  end
+
+  # The message goes to the socket named for the session's pid, as one frame
+  # addressed to that session, and counts as sent once the transcript shows it
+  # queued -- which is how the CLI records a message a busy session will read.
+  def test_a_message_the_session_queues_is_delivered
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    frames = listen_on_inbox { |frame| append_to_transcript({ "type" => "queue-operation", "operation" => "enqueue", "content" => frame.dig("message", "content") }) }
+
+    assert @claude.message(session_id: "uuid-1", text: "one more thing")
+
+    frame = frames.pop
+    assert_equal "uuid-1", frame["session_id"]
+    assert_equal "user", frame["type"]
+    assert_equal "one more thing", frame.dig("message", "content")
+  end
+
+  # A session that bypasses permission prompts holds a message from outside
+  # unless told to accept them. Held is not delivered.
+  def test_a_message_the_session_holds_is_not_delivered
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    listen_on_inbox { |_frame| append_to_transcript({ "type" => "system", "subtype" => "informational", "content" => "Held peer message — from an unidentified session" }) }
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  # Nothing to show it arrived is not the same as arriving: the caller keeps
+  # the message, and the worst case is saying it twice.
+  def test_a_message_with_no_sign_of_arrival_is_not_delivered
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    listen_on_inbox { |_frame| }
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  # The same text queued earlier -- a comment said twice -- does not answer
+  # for this one; only what was written after the post counts.
+  def test_an_earlier_identical_message_does_not_count
+    stub_busy_listing
+    write_transcript turn_ended_at: @now, after: [ { "type" => "queue-operation", "operation" => "enqueue", "content" => "one more thing" } ]
+    listen_on_inbox { |_frame| }
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  def test_a_session_without_an_inbox_is_not_messaged
+    stub_busy_listing
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  def test_a_session_that_is_not_resident_is_not_messaged
+    @runner.stub "claude agents --json", stdout: JSON.generate([
+      { "id" => "uuid-1"[0, 8], "sessionId" => "uuid-1", "name" => "A card", "state" => "done" }
+    ])
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
   end
 
   def test_spawning_names_the_session
@@ -442,6 +506,27 @@ class SessionClaudeTest < Minitest::Test
 
     # A session that moved into a worktree keeps its transcript under the
     # directory it started in, so this one is deliberately somewhere else.
+    # A stand-in for the session's inbox: reads each frame and hands it to the
+    # block, which plays the CLI's part by writing to the transcript.
+    def listen_on_inbox(&respond)
+      server = UNIXServer.new(File.join(@inboxes, "#{Process.pid}.sock"))
+      frames = Queue.new
+      @inbox_thread = Thread.new do
+        loop do
+          client = server.accept
+          frame = JSON.parse(client.read.lines.first)
+          client.close
+          respond.call(frame)
+          frames << frame
+        end
+      end
+      frames
+    end
+
+    def append_to_transcript(record)
+      File.open(Dir.glob(File.join(@projects, "*", "uuid-1.jsonl")).first, "a") { |file| file.puts record.to_json }
+    end
+
     def write_transcript(turn_ended_at:, after: [])
       dir = File.join(@projects, "-home-agent-work-repo--claude-worktrees-a-card")
       FileUtils.mkdir_p dir

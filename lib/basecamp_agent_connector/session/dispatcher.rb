@@ -15,8 +15,10 @@
 #     from Basecamp that is indistinguishable from a mention that never
 #     arrived — so a refused spawn is reported on the recording.
 #   - Nobody can be interrupted. Stopping a session that is mid-work throws
-#     that work away, so a comment arriving while its session is busy waits in
-#     the registry until the session finishes, and is delivered then.
+#     that work away, so a comment arriving while its session is busy goes into
+#     the session's inbox, where Claude reads it between tool calls. Only when
+#     the inbox does not take it does it wait in the registry until the session
+#     finishes, and is delivered then.
 class BasecampAgentConnector::Session::Dispatcher
   DEFAULT_FLUSH_INTERVAL = 15
   DEFAULT_PERMISSION_MODE = "acceptEdits".freeze
@@ -179,11 +181,20 @@ class BasecampAgentConnector::Session::Dispatcher
         prompt = BasecampAgentConnector::Session::Prompt.follow_up(event: event, requester: requester, agent: @agent, acked: acked)
         busy = @claude.busy?(entry.session_id)
 
-        # Only a definite "idle" is continued now. Busy, or a listing the CLI
-        # could not give, waits for the flusher: stopping a session that may be
-        # mid-work would throw that work away.
-        if busy != false
-          hold entry, prompt, reason: busy.nil? ? "its state could not be read" : "it is busy"
+        # Only a definite "idle" is continued now. A busy session is told through
+        # its inbox, which reaches it mid-work without stopping anything. Busy
+        # with an inbox that did not take it, or a listing the CLI could not
+        # give, waits for the flusher: stopping a session that may be mid-work
+        # would throw that work away.
+        #
+        # The flusher never uses the inbox. A session that held one message
+        # would hold every retry too, piling copies up behind an approval
+        # dialog nobody is there to answer.
+        if busy == true && entry.resumable? && @claude.message(session_id: entry.session_id, text: prompt)
+          log "session #{entry.short_id}: sent activity on #{entry.name} to its inbox while it works"
+          entry
+        elsif busy != false
+          hold entry, prompt, reason: busy.nil? ? "its state could not be read" : "it is busy and its inbox did not take it"
         else
           continued, delivered = continue(entry, prompt)
           delivered ? continued : continued.with(queue: continued.queue + [ prompt ])

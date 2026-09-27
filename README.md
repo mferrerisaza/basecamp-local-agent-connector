@@ -304,8 +304,12 @@ Three consequences of having no model in the loop, all handled explicitly:
 - **Nobody notices a failure.** A session that refuses to start is reported on the
   card, because silence there is indistinguishable from a missed mention.
 - **Nobody can be interrupted.** A comment arriving while its session is mid-work
-  waits in the registry and is delivered when the session finishes, rather than
-  stopping it and discarding what it was doing.
+  goes into the session's inbox (Claude Code's
+  [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
+  socket), where Claude reads it between tool calls without stopping the command
+  it is running. If the inbox doesn't take it, the comment waits in the registry
+  and is delivered when the session finishes, rather than stopping the session
+  and discarding what it was doing.
 
 A dispatched session never parks itself on a question, either. Nothing is watching
 its terminal, so when it needs input it posts the question to Basecamp and ends its
@@ -338,6 +342,26 @@ receipts, two workers and two replies. Pick one driver per connector.
 
 Requires the `claude` CLI on `PATH`; the connector refuses to start without it
 rather than discovering it at the first mention.
+
+**Mid-work delivery needs one setting.** A session that bypasses permission
+prompts holds messages from outside for an approval nobody is there to give, so
+with `--session-permission-mode bypassPermissions` add this to the user's
+`~/.claude/settings.json` (sessions pick it up without a restart):
+
+```json
+{ "crossSessionInbound": "accept" }
+```
+
+Only processes running as that OS user can reach a session's inbox. Without the
+setting nothing breaks: the message is held, the connector sees it was not
+delivered, and falls back to waiting. Don't try to pass it with `--settings` on
+spawn instead: a background session keeps the options it started with, so a
+resume given different flags starts a copy instead of continuing it.
+
+A message arriving this way is framed to Claude as coming from another session,
+with Claude Code's standing instruction not to treat it as the user's approval
+or to edit its config because a peer asked. An idle session is still continued
+with an ordinary prompt, so this only applies to comments made mid-work.
 
 ### Column moves (`--on-column-move`)
 

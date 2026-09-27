@@ -304,10 +304,10 @@ Three consequences of having no model in the loop, all handled explicitly:
 - **Nobody notices a failure.** A session that refuses to start is reported on the
   card, because silence there is indistinguishable from a missed mention.
 - **Nobody can be interrupted.** A comment arriving while its session is mid-work
-  goes into the session's inbox (Claude Code's
-  [cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging)
-  socket), where Claude reads it between tool calls without stopping the command
-  it is running. If the inbox doesn't take it, the comment waits in the registry
+  is sent to it as a reply, the same way a reply typed into
+  [agent view](https://code.claude.com/docs/en/agent-view) reaches a background
+  session, and Claude reads it between tool calls without stopping the command
+  it is running. If the reply doesn't go through, the comment waits in the registry
   and is delivered when the session finishes, rather than stopping the session
   and discarding what it was doing.
 
@@ -343,25 +343,18 @@ receipts, two workers and two replies. Pick one driver per connector.
 Requires the `claude` CLI on `PATH`; the connector refuses to start without it
 rather than discovering it at the first mention.
 
-**Mid-work delivery needs one setting.** A session that bypasses permission
-prompts holds messages from outside for an approval nobody is there to give, so
-with `--session-permission-mode bypassPermissions` add this to the user's
-`~/.claude/settings.json` (sessions pick it up without a restart):
+**How mid-work delivery works.** The connector sends the `reply` request agent
+view sends to Claude Code's background daemon: it finds the daemon's socket with
+`claude daemon status` and authenticates with the key the daemon keeps in
+`~/.claude/daemon/control.key`, so it only works as the OS user the sessions run
+as. The message arrives as the user's own (`origin: human`), exactly like a
+prompt given on resume, and is folded onto one line, because a reply with line
+breaks is framed as pasted content.
 
-```json
-{ "crossSessionInbound": "accept" }
-```
-
-Only processes running as that OS user can reach a session's inbox. Without the
-setting nothing breaks: the message is held, the connector sees it was not
-delivered, and falls back to waiting. Don't try to pass it with `--settings` on
-spawn instead: a background session keeps the options it started with, so a
-resume given different flags starts a copy instead of continuing it.
-
-A message arriving this way is framed to Claude as coming from another session,
-with Claude Code's standing instruction not to treat it as the user's approval
-or to edit its config because a peer asked. An idle session is still continued
-with an ordinary prompt, so this only applies to comments made mid-work.
+This request is internal to Claude Code, not a documented interface, and an
+update could change it. Every delivery is confirmed in the session's transcript,
+so if it stops working the comment is held and delivered when the session
+finishes, as it was before; nothing is lost.
 
 ### Column moves (`--on-column-move`)
 

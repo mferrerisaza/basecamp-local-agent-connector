@@ -16,67 +16,102 @@ class SessionClaudeTest < Minitest::Test
     @runner = FakeCommandRunner.new
     @projects = Dir.mktmpdir("claude-projects")
     @now = Time.utc(2026, 9, 26, 18, 30)
-    @inboxes = Dir.mktmpdir("cc-socks")
+    @daemon = Dir.mktmpdir("cc-daemon")
+    @socks = Dir.mktmpdir("cc-socks")
     @claude = Claude.new(command_runner: @runner, wait: ->(_seconds) { }, projects_dir: @projects, clock: -> { @now },
-      inbox_dirs: [ File.join(@inboxes, "missing"), @inboxes ])
+      daemon_dir: @daemon)
   end
 
   def teardown
-    @inbox_thread&.kill
+    @daemon_thread&.kill
     FileUtils.remove_entry @projects
-    FileUtils.remove_entry @inboxes
+    FileUtils.remove_entry @daemon
+    FileUtils.remove_entry @socks
   end
 
-  # The message goes to the socket named for the session's pid, as one frame
-  # addressed to that session, and counts as sent once the transcript shows it
-  # queued -- which is how the CLI records a message a busy session will read.
-  def test_a_message_the_session_queues_is_delivered
+  # The message goes to the daemon as the `reply` agent view sends, addressed
+  # by short id and authenticated with the daemon's key, and counts as sent
+  # once the transcript shows it queued -- how the CLI records a message a busy
+  # session will read.
+  def test_a_reply_the_session_queues_is_delivered
     stub_busy_listing
     write_transcript turn_ended_at: @now
-    frames = listen_on_inbox { |frame| append_to_transcript({ "type" => "queue-operation", "operation" => "enqueue", "content" => frame.dig("message", "content") }) }
+    requests = run_daemon { |request| append_to_transcript({ "type" => "queue-operation", "operation" => "enqueue", "content" => request["text"] }) }
 
     assert @claude.message(session_id: "uuid-1", text: "one more thing")
 
-    frame = frames.pop
-    assert_equal "uuid-1", frame["session_id"]
-    assert_equal "user", frame["type"]
-    assert_equal "one more thing", frame.dig("message", "content")
+    request = requests.pop
+    assert_equal 1, request["proto"]
+    assert_equal "reply", request["op"]
+    assert_equal "uuid-1"[0, 8], request["short"]
+    assert_equal "one more thing", request["text"]
+    assert_equal "the-key", request["auth"]
   end
 
-  # A session that bypasses permission prompts holds a message from outside
-  # unless told to accept them. Held is not delivered.
-  def test_a_message_the_session_holds_is_not_delivered
+  # A reply with line breaks arrives as pasted content, so the prompt's layout
+  # is folded onto one line; the words are all still there.
+  def test_a_reply_is_sent_as_one_line
     stub_busy_listing
     write_transcript turn_ended_at: @now
-    listen_on_inbox { |_frame| append_to_transcript({ "type" => "system", "subtype" => "informational", "content" => "Held peer message — from an unidentified session" }) }
+    requests = run_daemon { |request| append_to_transcript({ "type" => "queue-operation", "operation" => "enqueue", "content" => request["text"] }) }
+
+    assert @claude.message(session_id: "uuid-1", text: "New activity:\n\n  one more thing\nPosted on: a url\n")
+
+    assert_equal "New activity: one more thing Posted on: a url", requests.pop["text"]
+  end
+
+  # A turn the reply starts, on a session that was idle after all, shows up
+  # as the turn's prompt rather than a queued message.
+  def test_a_reply_that_starts_a_turn_is_delivered
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    run_daemon { |request| append_to_transcript({ "type" => "user", "message" => { "role" => "user", "content" => request["text"] } }) }
+
+    assert @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  def test_a_reply_the_daemon_refuses_is_not_delivered
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    run_daemon(answer: { "ok" => false, "error" => "unauthorized" }) { |_request| }
 
     refute @claude.message(session_id: "uuid-1", text: "one more thing")
   end
 
   # Nothing to show it arrived is not the same as arriving: the caller keeps
   # the message, and the worst case is saying it twice.
-  def test_a_message_with_no_sign_of_arrival_is_not_delivered
+  def test_a_reply_with_no_sign_of_arrival_is_not_delivered
     stub_busy_listing
     write_transcript turn_ended_at: @now
-    listen_on_inbox { |_frame| }
+    run_daemon { |_request| }
 
     refute @claude.message(session_id: "uuid-1", text: "one more thing")
   end
 
   # The same text queued earlier -- a comment said twice -- does not answer
-  # for this one; only what was written after the post counts.
+  # for this one; only what was written after the reply counts.
   def test_an_earlier_identical_message_does_not_count
     stub_busy_listing
     write_transcript turn_ended_at: @now, after: [ { "type" => "queue-operation", "operation" => "enqueue", "content" => "one more thing" } ]
-    listen_on_inbox { |_frame| }
+    run_daemon { |_request| }
 
     refute @claude.message(session_id: "uuid-1", text: "one more thing")
   end
 
-  def test_a_session_without_an_inbox_is_not_messaged
+  def test_no_daemon_running_is_not_messaged
     stub_busy_listing
+    @runner.stub "claude daemon status", stderr: "no daemon running", exit_status: 1
 
     refute @claude.message(session_id: "uuid-1", text: "one more thing")
+  end
+
+  def test_a_daemon_without_a_key_is_not_messaged
+    stub_busy_listing
+    write_transcript turn_ended_at: @now
+    requests = run_daemon(key: nil) { |_request| }
+
+    refute @claude.message(session_id: "uuid-1", text: "one more thing")
+    assert_empty requests
   end
 
   def test_a_session_that_is_not_resident_is_not_messaged
@@ -506,21 +541,26 @@ class SessionClaudeTest < Minitest::Test
 
     # A session that moved into a worktree keeps its transcript under the
     # directory it started in, so this one is deliberately somewhere else.
-    # A stand-in for the session's inbox: reads each frame and hands it to the
-    # block, which plays the CLI's part by writing to the transcript.
-    def listen_on_inbox(&respond)
-      server = UNIXServer.new(File.join(@inboxes, "#{Process.pid}.sock"))
-      frames = Queue.new
-      @inbox_thread = Thread.new do
+    # A stand-in for the background daemon: `claude daemon status` names its
+    # socket directory, the key sits in the daemon dir, and each request is
+    # handed to the block, which plays the CLI's part by writing to the
+    # transcript, before the daemon answers.
+    def run_daemon(key: "the-key", answer: { "ok" => true, "op" => "reply" }, &respond)
+      File.write(File.join(@daemon, "control.key"), "#{key}\n") if key
+      @runner.stub "claude daemon status", stdout: "pid:     1\nbg sessions:\n  sock dir:     #{@socks}\n  control.sock: reachable\n"
+      server = UNIXServer.new(File.join(@socks, "control.sock"))
+      requests = Queue.new
+      @daemon_thread = Thread.new do
         loop do
           client = server.accept
-          frame = JSON.parse(client.read.lines.first)
+          request = JSON.parse(client.gets)
+          respond.call(request)
+          requests << request
+          client.puts JSON.generate(answer)
           client.close
-          respond.call(frame)
-          frames << frame
         end
       end
-      frames
+      requests
     end
 
     def append_to_transcript(record)

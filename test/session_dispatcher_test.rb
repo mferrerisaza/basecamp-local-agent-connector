@@ -11,7 +11,7 @@ class FakeClaude
 
   attr_reader :spawns, :continuations, :stops, :messages
   attr_accessor :states, :spawn_succeeds, :resolvable, :listing_fails, :continues_as, :resume_succeeds, :on_resume,
-    :inbox_takes
+    :reply_goes_through
 
   def initialize
     @spawns = []
@@ -19,7 +19,7 @@ class FakeClaude
     @stops = []
     @messages = []
     @states = {}
-    @inbox_takes = false
+    @reply_goes_through = false
     @spawn_succeeds = true
     @resume_succeeds = true
     @resolvable = true
@@ -97,11 +97,11 @@ class FakeClaude
     state(session_id) == "working"
   end
 
-  # Attempts are recorded whether or not the inbox takes them. It takes none
-  # unless a test says so, which is how a session with no inbox behaves.
+  # Attempts are recorded whether or not the reply goes through. None do
+  # unless a test says so, which is how a box with no daemon behaves.
   def message(session_id:, text:)
     @messages << Message.new(session_id, text)
-    @inbox_takes
+    @reply_goes_through
   end
 
   # The session opened for the only card these tests use.
@@ -219,10 +219,10 @@ class SessionDispatcherTest < Minitest::Test
     assert_equal 1, @registry.find("clawdito_222_Kanban-Card_789").queue.length
   end
 
-  # A busy session is told through its inbox, which reaches it between tool
-  # calls: nothing is stopped, nothing waits.
-  def test_a_comment_arriving_while_the_session_works_goes_to_its_inbox
-    @claude.inbox_takes = true
+  # A busy session is sent a reply, which reaches it between tool calls:
+  # nothing is stopped, nothing waits.
+  def test_a_comment_arriving_while_the_session_works_is_replied
+    @claude.reply_goes_through = true
     subject = dispatcher
     subject.dispatch event
 
@@ -233,12 +233,12 @@ class SessionDispatcherTest < Minitest::Test
     assert_empty @claude.continuations
     assert_empty @claude.stops
     assert_empty @registry.find("clawdito_222_Kanban-Card_789").queue
-    assert_includes @log.string, "to its inbox while it works"
+    assert_includes @log.string, "replied with activity on"
   end
 
-  # Held, or no inbox at all: the comment waits exactly as it did before there
-  # was an inbox to try.
-  def test_a_comment_the_inbox_does_not_take_is_queued
+  # A reply that does not go through: the comment waits exactly as it did
+  # before there was a reply to try.
+  def test_a_comment_whose_reply_does_not_go_through_is_queued
     subject = dispatcher
     subject.dispatch event
 
@@ -249,10 +249,10 @@ class SessionDispatcherTest < Minitest::Test
     assert_equal 1, @registry.find("clawdito_222_Kanban-Card_789").queue.length
   end
 
-  # An idle session is continued as before; the inbox is only for a session
+  # An idle session is continued as before; the reply is only for a session
   # that cannot be stopped.
   def test_an_idle_session_is_continued_not_messaged
-    @claude.inbox_takes = true
+    @claude.reply_goes_through = true
     subject = dispatcher
     subject.dispatch event
     @claude.states[@claude.only_session_id] = "done"
@@ -263,13 +263,13 @@ class SessionDispatcherTest < Minitest::Test
     assert_equal 1, @claude.continuations.length
   end
 
-  # A session that held one message would hold every retry, piling copies up
-  # behind an approval nobody answers, so the flusher never tries the inbox.
-  def test_flushing_does_not_retry_the_inbox
+  # The flusher delivers what it holds with an ordinary resume once the
+  # session is free; it does not try the reply again.
+  def test_flushing_does_not_retry_the_reply
     subject = dispatcher
     subject.dispatch event
     subject.dispatch event("id" => 99002, "recording" => sample_recording("id" => 457))
-    @claude.inbox_takes = true
+    @claude.reply_goes_through = true
 
     subject.flush
 

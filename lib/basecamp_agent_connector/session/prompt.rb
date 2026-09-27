@@ -100,21 +100,19 @@ class BasecampAgentConnector::Session::Prompt
     PROMPT
   end
 
-  # Kept short: it goes to a busy session as an agent view reply, and the CLI
-  # wraps a reply of more than about 800 characters as pasted content. A
-  # long comment still gets wrapped; the boilerplate should not be what
-  # tips a short one over.
   def follow_up
     <<~PROMPT
-      New activity from #{@requester} on this thing of work:
+      New activity in Basecamp on the same thing of work, from #{@requester}:
 
       #{instruction}
 
       Posted on: #{recording_app_url}
       Reply to: #{reply_target}
 
-      #{"#{receipt_instruction}\n\n" unless @acked}Then carry on and reply on the recording as before; to ask someone something,
-      @mention #{@requester} in a Basecamp comment and end your turn.
+      #{"#{receipt_instruction}\n\n" unless @acked}Pick up from what you already know. Gather any further
+      context you need from Basecamp, do the work, and reply on the recording as before. If you need
+      something from a person, post the question as a Basecamp comment @mentioning #{@requester} and
+      end your turn rather than waiting.
     PROMPT
   end
 
@@ -225,8 +223,9 @@ class BasecampAgentConnector::Session::Prompt
     # before any context gathering: judged from the message above alone, as
     # the watching session used to.
     def receipt_instruction
-      "Acknowledge this first, before any context or work: `#{receipt_command}`, " \
-        "with a short phrase or emoji that fits it, not a fixed string."
+      "Acknowledge this in Basecamp right away, before gathering context or doing any work: " \
+        "`#{receipt_command}`. Make the boost fit the message: a short apt phrase or emoji (a few " \
+        "characters, the way a person would react), never the same fixed string every time."
     end
 
     # On a move, the adoption event in the card's history rather than the

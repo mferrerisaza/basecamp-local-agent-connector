@@ -566,7 +566,7 @@ class SessionDispatcherTest < Minitest::Test
     prompt = @claude.continuations.last.prompt
     assert_empty @runner.commands_matching(/boost create/)
     assert_includes prompt, "basecamp boost create https://3.basecamp.com/000/buckets/222/comments/456.json"
-    assert_operator prompt.index("Acknowledge this"), :<, prompt.index("Pick up from what you already know")
+    assert_operator prompt.index("Acknowledge this"), :<, prompt.index("Then carry on")
   end
 
   def test_a_follow_up_replied_mid_work_is_acked_by_the_session
